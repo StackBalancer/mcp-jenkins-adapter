@@ -9,22 +9,25 @@ import (
 	"os"
 	"strings"
 
+	"jenkins/mcp-client/llm"
+
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/mcp"
-	openai "github.com/sashabaranov/go-openai"
 )
 
-// Message structure for conversation
-type Message struct {
-	Role    string `json:"role"`    // "user" or "assistant"
-	Content string `json:"content"` // text content
-}
-
 func main() {
-	// Get OpenAI API key from environment
-	apiKey := os.Getenv("OPENAI_API_KEY")
-	if apiKey == "" {
-		log.Fatal("OPENAI_API_KEY environment variable not set")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Get LLM provider from environment (default: openai)
+	providerType := os.Getenv("LLM_PROVIDER")
+	if providerType == "" {
+		providerType = "openai"
+	}
+
+	llmProvider, err := llm.NewProvider(providerType)
+	if err != nil {
+		log.Fatalf("Failed to initialize LLM provider: %v", err)
 	}
 
 	// MCP server SSE URL
@@ -39,8 +42,6 @@ func main() {
 		log.Fatalf("failed to connect to MCP server: %v", err)
 	}
 	defer mcpClient.Close()
-
-	ctx := context.Background()
 
 	// Start client connection before Initialize
 	ready := make(chan error, 1)
@@ -69,13 +70,11 @@ func main() {
 		log.Fatalf("failed to initialize MCP client: %v", err)
 	}
 
-	fmt.Printf("MCP initialized. Server: %+v\n", initResp.ServerInfo)
-
-	// OpenAI client
-	oa := openai.NewClient(apiKey)
+	fmt.Printf("MCP initialized. Server: %s v%s\n", initResp.ServerInfo.Name, initResp.ServerInfo.Version)
+	fmt.Printf("Using LLM provider: %s\n", llmProvider.GetName())
 
 	// Conversation history
-	history := []Message{
+	history := []llm.Message{
 		{
 			Role: "system",
 			Content: `You are a DevOps assistant.
@@ -90,6 +89,17 @@ func main() {
 
 	fmt.Println("Jenkins LLM Bridge started. Type your prompts:")
 
+	// Limit history size
+	const maxHistory = 50
+
+	// Allowed tools
+	var allowedTools = map[string]bool{
+		"trigger_job":      true,
+		"get_build_status": true,
+		"get_console_log":  true,
+		"analyze_logs":     true,
+	}
+
 	// REPL loop
 	scanner := bufio.NewScanner(os.Stdin)
 	for {
@@ -100,43 +110,48 @@ func main() {
 		}
 		input = scanner.Text()
 
-		if err != nil {
-			if err.Error() == "unexpected newline" {
-				continue
-			}
-			log.Printf("input error: %v", err)
-			continue
-		}
-
 		// Append user message
-		history = append(history, Message{
+		history = append(history, llm.Message{
 			Role:    "user",
 			Content: input,
 		})
 
-		// Send prompt to OpenAI
-		ctx := context.Background()
-		resp, err := oa.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
-			Model:       "gpt-4",
-			Messages:    convertMessages(history),
-			Temperature: 0.2,
-		})
-		if err != nil {
-			log.Printf("OpenAI error: %v", err)
-			continue
+		if len(history) > maxHistory {
+			// Keep system message + recent history
+			systemMsg := history[0]
+			history = append([]llm.Message{systemMsg}, history[len(history)-maxHistory+1:]...)
 		}
 
-		llmReply := resp.Choices[0].Message.Content
+		// Send prompt to LLM
+		llmReply, err := llmProvider.CreateCompletion(ctx, history, 0)
+		if err != nil {
+			log.Printf("LLM error: %v", err)
+			continue
+		}
 		fmt.Printf("LLM: %s\n", llmReply)
 
 		// Check if LLM wants to call a tool
 		if toolCall := parseToolCall(llmReply); toolCall != nil {
 			fmt.Printf("→ Detected MCP tool call: %+v\n", toolCall)
 
+			// Validate tool call
+			if !allowedTools[toolCall.Name] {
+				log.Printf("Unauthorized tool: %s", toolCall.Name)
+				continue
+			}
+
 			if toolCall.Name == "analyze_logs" {
 				// Special call: fetch logs first, then analyze with OpenAI
-				jobName, _ := toolCall.Params["job_name"].(string)
-				buildNum := int(toolCall.Params["build_number"].(float64))
+				jobName, ok := toolCall.Params["job_name"].(string)
+				if !ok || !isValidJobName(jobName) {
+					log.Printf("Invalid job_name format: %s", jobName)
+					continue
+				}
+				buildNumFloat, ok := toolCall.Params["build_number"].(float64)
+				if !ok || buildNumFloat < 0 {
+					log.Printf("Invalid build_number")
+					continue
+				}
 
 				// Step 1: get logs from MCP
 				logReq := mcp.CallToolRequest{
@@ -144,7 +159,7 @@ func main() {
 						Name: "get_console_log",
 						Arguments: map[string]any{
 							"job_name":     jobName,
-							"build_number": buildNum,
+							"build_number": buildNumFloat,
 						},
 					},
 				}
@@ -159,29 +174,45 @@ func main() {
 				toolText := extractTextFromContent(logContent)
 				fmt.Println("→ Jenkins logs fetched, sending to OpenAI...")
 
-				// Step 2: send logs to OpenAI for troubleshooting
-				analysis, err := oa.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
-					Model: "gpt-4o-mini",
-					Messages: []openai.ChatCompletionMessage{
-						{Role: "system", Content: "You are a DevOps expert. Analyze Jenkins logs and explain errors, causes, and fixes."},
-						{Role: "user", Content: toolText},
-					},
-					MaxTokens: 500,
-				})
+				// Step 2: send logs to LLM for troubleshooting
+				analysisMessages := []llm.Message{
+					{Role: "system", Content: "You are a DevOps expert. Analyze Jenkins logs and explain errors, causes, and fixes."},
+					{Role: "user", Content: toolText},
+				}
+				result, err := llmProvider.CreateCompletion(ctx, analysisMessages, 500)
 				if err != nil {
-					fmt.Printf("OpenAI log analysis error: %v\n", err)
+					fmt.Printf("LLM log analysis error: %v\n", err)
+					continue
+				}
+				fmt.Printf("Analysis: %s\n", result)
+
+				// Add back into history
+				history = append(history, llm.Message{
+					Role:    "assistant",
+					Content: "[Log analysis completed]",
+				})
+			} else {
+				// Validate parameters for other tools
+				jobName, ok := toolCall.Params["job_name"].(string)
+				if !ok || jobName == "" {
+					log.Printf("Invalid or missing job_name")
 					continue
 				}
 
-				result := analysis.Choices[0].Message.Content
-				fmt.Printf("🔎 Analysis: %s\n", result)
+				// Validate job_name pattern (alphanumeric, dash, underscore only)
+				if !isValidJobName(jobName) {
+					log.Printf("Invalid job_name format: %s", jobName)
+					continue
+				}
 
-				// Add back into history
-				history = append(history, Message{
-					Role:    "assistant",
-					Content: fmt.Sprintf("[Log analysis]: %s", result),
-				})
-			} else {
+				// For tools that need build_number
+				if toolCall.Name == "get_build_status" || toolCall.Name == "get_console_log" {
+					buildNumFloat, ok := toolCall.Params["build_number"].(float64)
+					if !ok || buildNumFloat < 0 {
+						log.Printf("Invalid build_number")
+						continue
+					}
+				}
 				// Normal MCP tool call
 				req := mcp.CallToolRequest{
 					Params: mcp.CallToolParams{
@@ -189,22 +220,39 @@ func main() {
 						Arguments: toolCall.Params,
 					},
 				}
-				toolResp, err := mcpClient.CallTool(ctx, req)
+				_, err := mcpClient.CallTool(ctx, req)
 				if err != nil {
 					fmt.Printf("MCP call error: %v\n", err)
 					continue
 				}
-				fmt.Printf("→ Tool result: %+v\n", toolResp)
+				log.Printf("→ Tool '%s' completed successfully\n", toolCall.Name)
 
-				history = append(history, Message{
+				history = append(history, llm.Message{
 					Role:    "assistant",
-					Content: fmt.Sprintf("[Tool output]: %v", toolResp.Result),
+					Content: "[Tool executed successfully]",
 				})
 			}
 		} else {
-			history = append(history, Message{Role: "assistant", Content: llmReply})
+			history = append(history, llm.Message{Role: "assistant", Content: llmReply})
 		}
 	}
+}
+
+// Validate job name
+func isValidJobName(name string) bool {
+	if name == "" || len(name) > 100 {
+		return false
+	}
+	// Allow alphanumeric, dash, underscore, and dot
+	for _, ch := range name {
+		if !((ch >= 'a' && ch <= 'z') ||
+			(ch >= 'A' && ch <= 'Z') ||
+			(ch >= '0' && ch <= '9') ||
+			ch == '-' || ch == '_' || ch == '.') {
+			return false
+		}
+	}
+	return true
 }
 
 // extractTextFromContent flattens []mcp.Content into a readable string
@@ -223,19 +271,6 @@ func extractTextFromContent(contents []mcp.Content) string {
 		}
 	}
 	return strings.TrimSpace(sb.String())
-}
-
-// convertMessages maps history to OpenAI chat messages
-func convertMessages(history []Message) []openai.ChatCompletionMessage {
-	m := []openai.ChatCompletionMessage{}
-	for _, msg := range history {
-		role := msg.Role // keep "system", "user", "assistant"
-		m = append(m, openai.ChatCompletionMessage{
-			Role:    role,
-			Content: msg.Content,
-		})
-	}
-	return m
 }
 
 // ToolCall struct
@@ -280,7 +315,7 @@ func parseToolCall(reply string) *ToolCall {
 	var params map[string]any
 	err := json.Unmarshal([]byte(jsonStr), &params)
 	if err != nil {
-		log.Printf("failed to parse tool params JSON: %v\nraw JSON: %s", err, jsonStr)
+		log.Printf("failed to parse tool params JSON")
 		return nil
 	}
 
