@@ -1,3 +1,55 @@
-jenkins-secrets/*
+# Environment files
 .env
+.env.local
+.env.*.local
+
+# Jenkins secrets
+jenkins-secrets/
+*.token
+
+# Go build artifacts
+mcp-client/mcp-client
+mcp-server/mcp-server
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+go.work
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+Thumbs.db
+.Spotlight-V100
+.Trashes
+
+# Docker/Podman
+.dockerignore
+docker-compose.override.yml
+*.pid
+
+# Logs
+*.log
+logs/
+jenkins_home/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Go module cache
+go.sum.backup
+go.work
+go.work.sum
+
+# Text files
 *.txt
