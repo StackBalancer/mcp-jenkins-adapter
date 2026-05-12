@@ -2,16 +2,21 @@ package llm
 
 import (
 	"context"
+	"fmt"
 
 	openai "github.com/sashabaranov/go-openai"
 )
 
 type OpenAIProvider struct {
+	apiKey string
+	model  string
 	client *openai.Client
 }
 
-func NewOpenAIProvider(apiKey string) *OpenAIProvider {
+func NewOpenAIProvider(apiKey, model string) *OpenAIProvider {
 	return &OpenAIProvider{
+		apiKey: apiKey,
+		model:  model,
 		client: openai.NewClient(apiKey),
 	}
 }
@@ -26,7 +31,7 @@ func (p *OpenAIProvider) CreateCompletion(ctx context.Context, messages []Messag
 	}
 
 	req := openai.ChatCompletionRequest{
-		Model:       "gpt-4",
+		Model:       p.model,
 		Messages:    oaiMessages,
 		Temperature: 0.2,
 	}
@@ -43,5 +48,5 @@ func (p *OpenAIProvider) CreateCompletion(ctx context.Context, messages []Messag
 }
 
 func (p *OpenAIProvider) GetName() string {
-	return "OpenAI"
+	return fmt.Sprintf("OpenAI (%s)", p.model)
 }

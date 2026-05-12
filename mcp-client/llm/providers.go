@@ -16,20 +16,33 @@ type Message struct {
 	Content string `json:"content"`
 }
 
-func NewProvider(providerType string) (Provider, error) {
+type ProviderConfig struct {
+	APIKey string
+	Model  string
+}
+
+func NewProvider(providerType string, cfg ProviderConfig) (Provider, error) {
 	switch providerType {
-	case "openai":
-		apiKey := os.Getenv("OPENAI_API_KEY")
-		if apiKey == "" {
-			return nil, fmt.Errorf("OPENAI_API_KEY environment variable not set")
-		}
-		return NewOpenAIProvider(apiKey), nil
 	case "claude":
-		apiKey := os.Getenv("CLAUDE_API_KEY")
-		if apiKey == "" {
-			return nil, fmt.Errorf("CLAUDE_API_KEY environment variable not set")
+		if cfg.APIKey == "" {
+			cfg.APIKey = os.Getenv("ANTHROPIC_API_KEY")
 		}
-		return NewClaudeProvider(apiKey), nil
+		if cfg.APIKey == "" {
+			return nil, fmt.Errorf("ANTHROPIC_API_KEY not set")
+		}
+		model := ResolveModel(cfg.Model, DefaultClaudeModel)
+		return NewClaudeProvider(cfg.APIKey, model), nil
+
+	case "openai":
+		if cfg.APIKey == "" {
+			cfg.APIKey = os.Getenv("OPENAI_API_KEY")
+		}
+		if cfg.APIKey == "" {
+			return nil, fmt.Errorf("OPENAI_API_KEY not set")
+		}
+		model := ResolveModel(cfg.Model, DefaultOpenAIModel)
+		return NewOpenAIProvider(cfg.APIKey, model), nil
+
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", providerType)
 	}

@@ -81,7 +81,7 @@ Set `LLM_PROVIDER` in your `.env`:
 | Value | Key needed |
 |---|---|
 | `openai` | `OPENAI_API_KEY` |
-| `claude` | `CLAUDE_API_KEY` |
+| `claude` | `ANTHROPIC_API_KEY` |
 
 ---
 

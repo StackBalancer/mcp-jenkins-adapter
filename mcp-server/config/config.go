@@ -7,15 +7,16 @@ import (
 
 type Config struct {
 	Jenkins struct {
-		URL      string
-		User     string
-		Token    string
+		URL       string
+		User      string
+		Token     string
 		TokenFile string
 	}
 	LLM struct {
-		Provider   string
-		OpenAIKey  string
-		ClaudeKey  string
+		Provider  string
+		OpenAIKey string
+		ClaudeKey string
+		Model     string
 	}
 	MCP struct {
 		ServerURL string
@@ -25,26 +26,27 @@ type Config struct {
 
 func Load() (*Config, error) {
 	cfg := &Config{}
-	
+
 	// Jenkins configuration
 	cfg.Jenkins.URL = getEnvOrDefault("JENKINS_URL", "http://jenkins:8080/jenkins")
 	cfg.Jenkins.User = getEnvOrDefault("JENKINS_MCP_USER", "mcp-user")
 	cfg.Jenkins.TokenFile = getEnvOrDefault("JENKINS_TOKEN_FILE", "/run/secrets/mcp-user.token")
-	
+
 	// LLM configuration
 	cfg.LLM.Provider = getEnvOrDefault("LLM_PROVIDER", "openai")
 	cfg.LLM.OpenAIKey = os.Getenv("OPENAI_API_KEY")
-	cfg.LLM.ClaudeKey = os.Getenv("CLAUDE_API_KEY")
-	
+	cfg.LLM.ClaudeKey = os.Getenv("ANTHROPIC_API_KEY")
+	cfg.LLM.Model = os.Getenv("LLM_MODEL")
+
 	// MCP configuration
 	cfg.MCP.ServerURL = getEnvOrDefault("MCP_SERVER_URL", "http://localhost:8081/sse")
 	cfg.MCP.Port = getEnvOrDefault("MCP_PORT", "8081")
-	
+
 	// Validate required fields
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
-	
+
 	return cfg, nil
 }
 
@@ -56,12 +58,12 @@ func (c *Config) validate() error {
 		}
 	case "claude":
 		if c.LLM.ClaudeKey == "" {
-			return fmt.Errorf("CLAUDE_API_KEY is required when using Claude provider")
+			return fmt.Errorf("ANTHROPIC_API_KEY is required when using Claude provider")
 		}
 	default:
 		return fmt.Errorf("unsupported LLM provider: %s", c.LLM.Provider)
 	}
-	
+
 	return nil
 }
 

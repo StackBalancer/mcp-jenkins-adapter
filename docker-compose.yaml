@@ -48,7 +48,7 @@ services:
       - jenkins
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - CLAUDE_API_KEY=${CLAUDE_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - LLM_PROVIDER=${LLM_PROVIDER:-openai}
       - MCP_SERVER_URL=http://mcp-server:8081/sse
     stdin_open: true

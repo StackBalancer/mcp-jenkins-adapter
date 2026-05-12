@@ -1,43 +1,27 @@
 package llm
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
+
+	"github.com/anthropics/anthropic-sdk-go"
+	"github.com/anthropics/anthropic-sdk-go/option"
 )
 
 type ClaudeProvider struct {
 	apiKey string
-	client *http.Client
+	model  string
+	client *anthropic.Client
 }
 
-type claudeRequest struct {
-	Model     string          `json:"model"`
-	MaxTokens int             `json:"max_tokens"`
-	Messages  []claudeMessage `json:"messages"`
-}
-
-type claudeMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
-
-type claudeResponse struct {
-	Content []struct {
-		Text string `json:"text"`
-	} `json:"content"`
-	Error *struct {
-		Message string `json:"message"`
-	} `json:"error,omitempty"`
-}
-
-func NewClaudeProvider(apiKey string) *ClaudeProvider {
+func NewClaudeProvider(apiKey, model string) *ClaudeProvider {
+	client := anthropic.NewClient(
+		option.WithAPIKey(apiKey),
+	)
 	return &ClaudeProvider{
 		apiKey: apiKey,
-		client: &http.Client{},
+		model:  model,
+		client: &client,
 	}
 }
 
@@ -46,64 +30,45 @@ func (p *ClaudeProvider) CreateCompletion(ctx context.Context, messages []Messag
 		maxTokens = 1000
 	}
 
-	claudeMessages := make([]claudeMessage, 0, len(messages))
+	// extract system message and build anthropic messages
+	var systemPrompt string
+	anthropicMessages := make([]anthropic.MessageParam, 0, len(messages))
+
 	for _, msg := range messages {
-		if msg.Role == "system" {
-			continue // Claude handles system messages differently
+		switch msg.Role {
+		case "system":
+			systemPrompt = msg.Content
+		default:
+			anthropicMessages = append(anthropicMessages, anthropic.MessageParam{
+				Role: anthropic.MessageParamRole(msg.Role),
+				Content: []anthropic.ContentBlockParamUnion{
+					anthropic.NewTextBlock(msg.Content),
+				},
+			})
 		}
-		claudeMessages = append(claudeMessages, claudeMessage{
-			Role:    msg.Role,
-			Content: msg.Content,
-		})
 	}
 
-	reqBody := claudeRequest{
-		Model:     "claude-3-sonnet-20240229",
-		MaxTokens: maxTokens,
-		Messages:  claudeMessages,
+	params := anthropic.MessageNewParams{
+		Model:     p.model,
+		MaxTokens: int64(maxTokens),
+		Messages:  anthropicMessages,
 	}
 
-	jsonData, err := json.Marshal(reqBody)
+	// only set system if one was found
+	if systemPrompt != "" {
+		params.System = []anthropic.TextBlockParam{
+			{Text: systemPrompt},
+		}
+	}
+
+	resp, err := p.client.Messages.New(ctx, params)
 	if err != nil {
 		return "", err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.anthropic.com/v1/messages", bytes.NewBuffer(jsonData))
-	if err != nil {
-		return "", err
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-api-key", p.apiKey)
-	req.Header.Set("anthropic-version", "2023-06-01")
-
-	resp, err := p.client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-
-	var claudeResp claudeResponse
-	if err := json.Unmarshal(body, &claudeResp); err != nil {
-		return "", err
-	}
-
-	if claudeResp.Error != nil {
-		return "", fmt.Errorf("claude API error: %s", claudeResp.Error.Message)
-	}
-
-	if len(claudeResp.Content) == 0 {
-		return "", fmt.Errorf("no content in Claude response")
-	}
-
-	return claudeResp.Content[0].Text, nil
+	return resp.Content[0].Text, nil
 }
 
 func (p *ClaudeProvider) GetName() string {
-	return "Claude"
+	return fmt.Sprintf("Claude (%s)", p.model)
 }

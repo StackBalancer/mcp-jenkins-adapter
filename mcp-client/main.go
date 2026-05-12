@@ -22,10 +22,13 @@ func main() {
 	// Get LLM provider from environment (default: openai)
 	providerType := os.Getenv("LLM_PROVIDER")
 	if providerType == "" {
-		providerType = "openai"
+		providerType = "claude"
 	}
 
-	llmProvider, err := llm.NewProvider(providerType)
+	llmCfg := llm.ProviderConfig{
+		Model: os.Getenv("LLM_MODEL"),
+	}
+	llmProvider, err := llm.NewProvider(providerType, llmCfg)
 	if err != nil {
 		log.Fatalf("Failed to initialize LLM provider: %v", err)
 	}
