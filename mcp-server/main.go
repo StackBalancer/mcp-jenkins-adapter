@@ -122,12 +122,31 @@ func main() {
 	// get_build_status tool
 	statusTool := mcp.NewTool(
 		"get_build_status",
-		mcp.WithDescription("Get latest build status for job (returns raw JSON)."),
+		mcp.WithDescription("Get build status for a job (returns raw JSON). Defaults to lastBuild."),
 		mcp.WithString("job_name", mcp.Description("job name (required)"), mcp.Required()),
+		mcp.WithString("build_number", mcp.Description("build number (optional, defaults to lastBuild)")),
 	)
 	m.AddTool(statusTool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		jobNameVal, _ := req.Params.Arguments.(map[string]any)["job_name"].(string)
-		data, err := jc.do("GET", fmt.Sprintf("/job/%s/lastBuild/api/json", jobNameVal), nil, nil)
+
+		buildRef := "lastBuild"
+		if val, ok := req.Params.Arguments.(map[string]any)["build_number"]; ok {
+			switch v := val.(type) {
+			case int:
+				buildRef = strconv.Itoa(v)
+			case float64:
+				buildRef = strconv.Itoa(int(v))
+			case string:
+				if v != "" {
+					if _, err := strconv.Atoi(v); err != nil {
+						return mcp.NewToolResultError("invalid build_number: must be a numeric string"), nil
+					}
+					buildRef = v
+				}
+			}
+		}
+
+		data, err := jc.do("GET", fmt.Sprintf("/job/%s/%s/api/json", jobNameVal, buildRef), nil, nil)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
